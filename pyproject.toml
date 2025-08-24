@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "epix-vanity"
+version = "1.0.0"
+description = "High-performance vanity address generator for Epix blockchain"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Mud"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "ecdsa>=0.18.0",
+    "pycryptodome>=3.19.0",
+    "bech32>=1.2.0",
+    "multiprocessing-logging>=0.3.4",
+    "psutil>=5.9.0",
+    "click>=8.1.0",
+    "colorama>=0.4.6",
+    "tqdm>=4.66.0",
+    "rich>=13.7.0",
+    "pydantic>=2.5.0",
+    "toml>=0.10.2",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+gpu = ["pycuda>=2023.1", "pyopencl>=2023.1.4"]
+dev = ["pytest>=7.4.0", "pytest-cov>=4.1.0", "black>=23.12.0", "flake8>=6.1.0", "mypy>=1.8.0"]
+
+[project.scripts]
+epix-vanity = "epix_vanity.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/EpixZone/EpixVanity"
+Repository = "https://github.com/EpixZone/EpixVanity"
+Issues = "https://github.com/EpixZone/EpixVanity/issues"
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--cov=epix_vanity --cov-report=html --cov-report=term-missing"

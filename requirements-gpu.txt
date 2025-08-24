@@ -1,0 +1,8 @@
+# GPU acceleration dependencies (optional)
+# Install only if you have CUDA or OpenCL support
+
+# CUDA support (requires NVIDIA GPU and CUDA toolkit)
+pycuda>=2023.1
+
+# OpenCL support (requires OpenCL drivers)
+pyopencl>=2023.1.4
