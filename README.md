@@ -1,0 +1,2 @@
+# EpixVanity
+Vanity address generator.
