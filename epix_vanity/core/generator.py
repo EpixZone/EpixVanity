@@ -36,10 +36,10 @@ def _multiprocessing_worker(args):
 
     attempts = 0
     start_time = time.time()
-    batch_size = 10000  # Process in batches for better performance
+    max_worker_attempts = 100000  # Each worker tries this many before returning
 
-    # Keep trying until a match is found or user-specified limits
-    while True:
+    # Try up to max_worker_attempts, then return to allow checking other workers
+    for _ in range(max_worker_attempts):
         # Check user-specified timeout (only if set)
         if timeout and (time.time() - start_time) >= timeout:
             break
@@ -48,37 +48,29 @@ def _multiprocessing_worker(args):
         if max_attempts and attempts >= max_attempts:
             break
 
-        # Process a batch
-        for _ in range(batch_size):
-            try:
-                # Generate keypair
-                keypair = crypto.generate_keypair()
-                attempts += 1
+        try:
+            # Generate keypair
+            keypair = crypto.generate_keypair()
+            attempts += 1
 
-                # Check if address matches pattern
-                if pattern_validator.matches_pattern(keypair.address, pattern):
-                    # Found a match!
-                    return {
-                        'success': True,
-                        'keypair': {
-                            'private_key': keypair.private_key,
-                            'public_key': keypair.public_key,
-                            'address': keypair.address,
-                            'eth_address': keypair.eth_address
-                        },
-                        'attempts': attempts,
-                        'elapsed_time': time.time() - start_time,
-                        'worker_id': worker_id
-                    }
+            # Check if address matches pattern
+            if pattern_validator.matches_pattern(keypair.address, pattern):
+                # Found a match!
+                return {
+                    'success': True,
+                    'keypair': {
+                        'private_key': keypair.private_key,
+                        'public_key': keypair.public_key,
+                        'address': keypair.address,
+                        'eth_address': keypair.eth_address
+                    },
+                    'attempts': attempts,
+                    'elapsed_time': time.time() - start_time,
+                    'worker_id': worker_id
+                }
 
-                # Check user limits within batch (only if set)
-                if timeout and (time.time() - start_time) >= timeout:
-                    break
-                if max_attempts and attempts >= max_attempts:
-                    break
-
-            except Exception:
-                continue
+        except Exception:
+            continue
 
     # No match found in this worker
     return {
@@ -329,36 +321,54 @@ class VanityGenerator:
                 None  # max_attempts per worker (None = unlimited, let processes run until match found)
             ))
 
-        # Use multiprocessing
+        # Use multiprocessing with worker restart capability
         with ProcessPoolExecutor(max_workers=self.num_threads) as executor:
             futures = [executor.submit(_multiprocessing_worker, args) for args in worker_args]
+            active_futures = set(futures)
 
-            # Wait for first successful result
-            for future in as_completed(futures):
-                try:
-                    worker_result = future.result()
-                    if worker_result['success']:
-                        # Recreate KeyPair object
-                        keypair_data = worker_result['keypair']
-                        keypair = KeyPair(
-                            private_key=keypair_data['private_key'],
-                            public_key=keypair_data['public_key'],
-                            address=keypair_data['address'],
-                            eth_address=keypair_data['eth_address']
-                        )
+            # Keep checking for results and restart workers as needed
+            while active_futures:
+                # Wait for any worker to complete
+                for future in as_completed(active_futures.copy()):
+                    active_futures.remove(future)
 
-                        return GenerationResult(
-                            success=True,
-                            keypair=keypair,
-                            attempts=worker_result['attempts'],
-                            elapsed_time=worker_result['elapsed_time']
-                        )
-                except Exception as e:
-                    self.logger.error(f"Worker process error: {e}")
+                    try:
+                        worker_result = future.result()
+                        if worker_result['success']:
+                            # Found a match! Cancel all other futures immediately
+                            for other_future in active_futures:
+                                other_future.cancel()
 
-            # Cancel remaining futures
-            for future in futures:
-                future.cancel()
+                            # Recreate KeyPair object
+                            keypair_data = worker_result['keypair']
+                            keypair = KeyPair(
+                                private_key=keypair_data['private_key'],
+                                public_key=keypair_data['public_key'],
+                                address=keypair_data['address'],
+                                eth_address=keypair_data['eth_address']
+                            )
+
+                            return GenerationResult(
+                                success=True,
+                                keypair=keypair,
+                                attempts=worker_result['attempts'],
+                                elapsed_time=worker_result['elapsed_time']
+                            )
+                        else:
+                            # Worker completed without finding match, restart it
+                            worker_id = worker_result['worker_id']
+                            new_args = worker_args[worker_id]
+                            new_future = executor.submit(_multiprocessing_worker, new_args)
+                            active_futures.add(new_future)
+
+                    except Exception as e:
+                        self.logger.error(f"Worker process error: {e}")
+                        # Restart failed worker
+                        # Find which worker this was and restart it
+                        for i, args in enumerate(worker_args):
+                            new_future = executor.submit(_multiprocessing_worker, args)
+                            active_futures.add(new_future)
+                            break  # Only restart one worker for this error
 
         return None
 
