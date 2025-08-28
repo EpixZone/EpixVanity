@@ -165,16 +165,20 @@ class VanityGenerator:
         """Worker thread for vanity address generation."""
 
         attempts = 0
-        batch_size = 1000  # Process in batches for better performance monitoring
+        batch_size = 10000  # Larger batch size for better performance
+        local_batch_attempts = 0
+        last_stats_check = time.time()
+        stats_check_interval = 1.0  # Check stats only once per second
 
         while not self._stop_generation.is_set():
-            # Check timeout
-            if timeout and (time.time() - start_time) >= timeout:
-                break
-
-            # Check max attempts
-            if max_attempts and self.performance_monitor.get_stats().total_attempts >= max_attempts:
-                break
+            # Check timeout and max attempts less frequently
+            current_time = time.time()
+            if current_time - last_stats_check >= stats_check_interval:
+                if timeout and (current_time - start_time) >= timeout:
+                    break
+                if max_attempts and self.performance_monitor.get_stats().total_attempts >= max_attempts:
+                    break
+                last_stats_check = current_time
 
             # Generate batch of addresses
             batch_attempts = 0
@@ -187,11 +191,12 @@ class VanityGenerator:
                     keypair = self.crypto.generate_keypair()
                     attempts += 1
                     batch_attempts += 1
+                    local_batch_attempts += 1
 
                     # Check if address matches pattern
                     if self.pattern_validator.matches_pattern(keypair.address, pattern):
-                        # Found a match!
-                        self.performance_monitor.update_attempts(batch_attempts, 1)
+                        # Found a match! Update stats with all accumulated attempts
+                        self.performance_monitor.update_attempts(local_batch_attempts, 1)
                         return GenerationResult(
                             success=True,
                             keypair=keypair,
@@ -203,11 +208,13 @@ class VanityGenerator:
                     self.logger.error(f"Error in worker thread {thread_id}: {e}")
                     continue
 
-            # Update performance monitoring
-            self.performance_monitor.update_attempts(batch_attempts)
+            # Update performance monitoring less frequently
+            if local_batch_attempts >= 50000:  # Update every 50k attempts
+                self.performance_monitor.update_attempts(local_batch_attempts)
+                local_batch_attempts = 0
 
-            # Log progress periodically
-            if thread_id == 0:  # Only log from main thread
+            # Log progress periodically (only from thread 0 and less frequently)
+            if thread_id == 0 and current_time - last_stats_check >= stats_check_interval:
                 stats = self.performance_monitor.get_stats()
                 self.progress_logger.log_progress(
                     stats.total_attempts,
