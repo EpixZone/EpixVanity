@@ -340,8 +340,8 @@ def save_result(result, output_path: str, format_type: str, pattern: str) -> Non
             "address": result.keypair.address if result.keypair else None,
             "eth_address": result.keypair.eth_address if result.keypair else None,
             "private_key": result.keypair.private_key.hex() if result.keypair else None,
-            "attempts": result.attempts,
-            "elapsed_time": result.elapsed_time,
+            "attempts": int(result.attempts),  # Convert numpy types to native Python types
+            "elapsed_time": float(result.elapsed_time),
             "timestamp": time.time()
         }
         
