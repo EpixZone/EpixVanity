@@ -164,6 +164,12 @@ class VanityGenerator:
     ) -> Optional[GenerationResult]:
         """Worker thread for vanity address generation."""
 
+        # Create thread-local crypto instance to avoid contention
+        from .crypto import EpixCrypto
+        from ..utils.patterns import PatternValidator
+        thread_crypto = EpixCrypto(self.config)
+        thread_pattern_validator = PatternValidator(self.config.get_address_prefix())
+
         attempts = 0
         batch_size = 10000  # Larger batch size for better performance
         local_batch_attempts = 0
@@ -187,14 +193,14 @@ class VanityGenerator:
                     break
 
                 try:
-                    # Generate keypair
-                    keypair = self.crypto.generate_keypair()
+                    # Generate keypair using thread-local crypto instance
+                    keypair = thread_crypto.generate_keypair()
                     attempts += 1
                     batch_attempts += 1
                     local_batch_attempts += 1
 
-                    # Check if address matches pattern
-                    if self.pattern_validator.matches_pattern(keypair.address, pattern):
+                    # Check if address matches pattern using thread-local validator
+                    if thread_pattern_validator.matches_pattern(keypair.address, pattern):
                         # Found a match! Update stats with all accumulated attempts
                         self.performance_monitor.update_attempts(local_batch_attempts, 1)
                         return GenerationResult(
