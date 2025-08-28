@@ -110,9 +110,15 @@ class PatternValidator:
     
     def matches_pattern(self, address: str, pattern: Pattern) -> bool:
         """Check if an address matches the given pattern."""
-        # Remove prefix for pattern matching
+        # Remove prefix and bech32 separator for pattern matching
         if address.startswith(self.address_prefix):
-            address_body = address[len(self.address_prefix):]
+            # Remove both the prefix (e.g., "epix") and the bech32 separator "1"
+            prefix_with_separator = self.address_prefix + "1"
+            if address.startswith(prefix_with_separator):
+                address_body = address[len(prefix_with_separator):]
+            else:
+                # Fallback to old behavior if separator not found
+                address_body = address[len(self.address_prefix):]
         else:
             address_body = address
         
