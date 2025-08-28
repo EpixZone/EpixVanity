@@ -251,8 +251,8 @@ class CudaVanityGenerator:
                     
                     # Extract the matching keypair
                     private_key_bytes = private_keys[match_idx * 32:(match_idx + 1) * 32].tobytes()
-                    address_bytes = addresses[match_idx * 20:(match_idx + 1) * 20]
-                    
+                    address_bytes = addresses[match_idx * 20:(match_idx + 1) * 20].tobytes()
+
                     # Convert to proper format
                     eth_address = "0x" + address_bytes.hex()
                     bech32_address = self.crypto.eth_address_to_bech32(eth_address)
