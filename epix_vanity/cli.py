@@ -142,9 +142,11 @@ def generate(
         else:
             generator = VanityGenerator(
                 config=config,
-                num_threads=threads
+                num_threads=threads,
+                use_multiprocessing=True  # Use multiprocessing for better CPU utilization
             )
-            console.print(f"[green]Using CPU generation with {generator.num_threads} threads[/green]")
+            mode = "processes" if generator.use_multiprocessing else "threads"
+            console.print(f"[green]Using CPU generation with {generator.num_threads} {mode}[/green]")
         
         # Start generation with progress display
         with Progress(

@@ -2,7 +2,8 @@
 
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from typing import Optional, Callable, List, Dict, Any
 from dataclasses import dataclass
 
@@ -11,6 +12,62 @@ from .config import EpixConfig
 from ..utils.patterns import Pattern, PatternValidator
 from ..utils.performance import PerformanceMonitor
 from ..utils.logging import ProgressLogger, get_logger
+
+
+def _multiprocessing_worker(args):
+    """Worker function for multiprocessing-based generation."""
+    config_dict, pattern_dict, worker_id, batch_size, max_attempts_per_worker = args
+
+    # Recreate objects from dictionaries (needed for multiprocessing)
+    from .config import EpixConfig
+    from .crypto import EpixCrypto
+    from ..utils.patterns import Pattern, PatternType, PatternValidator
+
+    config = EpixConfig.from_dict(config_dict)
+    crypto = EpixCrypto(config)
+    pattern_validator = PatternValidator(config.get_address_prefix())
+
+    # Recreate pattern object
+    pattern = Pattern(
+        pattern=pattern_dict['pattern'],
+        pattern_type=PatternType(pattern_dict['pattern_type']),
+        case_sensitive=pattern_dict['case_sensitive']
+    )
+
+    attempts = 0
+    start_time = time.time()
+
+    for _ in range(max_attempts_per_worker):
+        try:
+            # Generate keypair
+            keypair = crypto.generate_keypair()
+            attempts += 1
+
+            # Check if address matches pattern
+            if pattern_validator.matches_pattern(keypair.address, pattern):
+                # Found a match!
+                return {
+                    'success': True,
+                    'keypair': {
+                        'private_key': keypair.private_key,
+                        'public_key': keypair.public_key,
+                        'address': keypair.address,
+                        'eth_address': keypair.eth_address
+                    },
+                    'attempts': attempts,
+                    'elapsed_time': time.time() - start_time,
+                    'worker_id': worker_id
+                }
+        except Exception as e:
+            continue
+
+    # No match found in this worker
+    return {
+        'success': False,
+        'attempts': attempts,
+        'elapsed_time': time.time() - start_time,
+        'worker_id': worker_id
+    }
 
 
 @dataclass
@@ -25,12 +82,13 @@ class GenerationResult:
 
 class VanityGenerator:
     """CPU-based vanity address generator for Epix blockchain."""
-    
+
     def __init__(
         self,
         config: Optional[EpixConfig] = None,
         num_threads: Optional[int] = None,
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        use_multiprocessing: bool = True
     ):
         """Initialize vanity generator."""
         self.config = config or EpixConfig.default_testnet()
@@ -39,11 +97,12 @@ class VanityGenerator:
         self.performance_monitor = PerformanceMonitor()
         self.progress_logger = ProgressLogger()
         self.logger = get_logger()
-        
-        # Threading configuration
+
+        # Threading/Processing configuration
         self.num_threads = num_threads or self._get_optimal_thread_count()
+        self.use_multiprocessing = use_multiprocessing
         self.progress_callback = progress_callback
-        
+
         # Control flags
         self._stop_generation = threading.Event()
         self._generation_active = False
@@ -65,7 +124,8 @@ class VanityGenerator:
         
         self.logger.info(f"Starting vanity generation for pattern: {pattern.pattern}")
         self.logger.info(f"Pattern type: {pattern.pattern_type.value}")
-        self.logger.info(f"Using {self.num_threads} threads")
+        mode = "processes" if self.use_multiprocessing else "threads"
+        self.logger.info(f"Using {self.num_threads} {mode}")
         
         # Validate pattern
         if not self.pattern_validator.validate_pattern(pattern.pattern, pattern.pattern_type):
@@ -88,35 +148,10 @@ class VanityGenerator:
         result = None
         
         try:
-            # Start generation with thread pool
-            with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
-                # Submit worker tasks
-                futures = []
-                for thread_id in range(self.num_threads):
-                    future = executor.submit(
-                        self._worker_thread,
-                        pattern,
-                        thread_id,
-                        max_attempts,
-                        timeout,
-                        start_time
-                    )
-                    futures.append(future)
-                
-                # Wait for first successful result
-                for future in as_completed(futures):
-                    try:
-                        worker_result = future.result()
-                        if worker_result and worker_result.success:
-                            result = worker_result
-                            self._stop_generation.set()
-                            break
-                    except Exception as e:
-                        self.logger.error(f"Worker thread error: {e}")
-                
-                # Cancel remaining futures
-                for future in futures:
-                    future.cancel()
+            if self.use_multiprocessing:
+                result = self._generate_with_multiprocessing(pattern, max_attempts, timeout, start_time)
+            else:
+                result = self._generate_with_threading(pattern, max_attempts, timeout, start_time)
         
         except KeyboardInterrupt:
             self.logger.info("Generation interrupted by user")
@@ -235,6 +270,119 @@ class VanityGenerator:
                         self.progress_callback(self.performance_monitor.get_formatted_stats())
                     except Exception as e:
                         self.logger.error(f"Error in progress callback: {e}")
+
+        return None
+
+    def _generate_with_multiprocessing(
+        self,
+        pattern: Pattern,
+        max_attempts: Optional[int],
+        timeout: Optional[float],
+        start_time: float
+    ) -> Optional[GenerationResult]:
+        """Generate using multiprocessing for true parallelism."""
+
+        # Prepare data for multiprocessing (must be serializable)
+        config_dict = {
+            'chain_id': self.config.chain_id,
+            'chain_name': self.config.chain_name,
+            'rpc': self.config.rpc,
+            'rest': self.config.rest,
+            'bech32_config': {
+                'bech32_prefix_acc_addr': self.config.bech32_config.bech32_prefix_acc_addr
+            }
+        }
+
+        pattern_dict = {
+            'pattern': pattern.pattern,
+            'pattern_type': pattern.pattern_type.value,
+            'case_sensitive': pattern.case_sensitive
+        }
+
+        # Calculate attempts per worker
+        max_attempts_per_worker = (max_attempts or 1000000) // self.num_threads
+
+        # Prepare worker arguments
+        worker_args = []
+        for worker_id in range(self.num_threads):
+            worker_args.append((
+                config_dict,
+                pattern_dict,
+                worker_id,
+                10000,  # batch_size
+                max_attempts_per_worker
+            ))
+
+        # Use multiprocessing
+        with ProcessPoolExecutor(max_workers=self.num_threads) as executor:
+            futures = [executor.submit(_multiprocessing_worker, args) for args in worker_args]
+
+            # Wait for first successful result
+            for future in as_completed(futures):
+                try:
+                    worker_result = future.result()
+                    if worker_result['success']:
+                        # Recreate KeyPair object
+                        keypair_data = worker_result['keypair']
+                        keypair = KeyPair(
+                            private_key=keypair_data['private_key'],
+                            public_key=keypair_data['public_key'],
+                            address=keypair_data['address'],
+                            eth_address=keypair_data['eth_address']
+                        )
+
+                        return GenerationResult(
+                            success=True,
+                            keypair=keypair,
+                            attempts=worker_result['attempts'],
+                            elapsed_time=worker_result['elapsed_time']
+                        )
+                except Exception as e:
+                    self.logger.error(f"Worker process error: {e}")
+
+            # Cancel remaining futures
+            for future in futures:
+                future.cancel()
+
+        return None
+
+    def _generate_with_threading(
+        self,
+        pattern: Pattern,
+        max_attempts: Optional[int],
+        timeout: Optional[float],
+        start_time: float
+    ) -> Optional[GenerationResult]:
+        """Generate using threading (original implementation)."""
+
+        # Start generation with thread pool
+        with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
+            # Submit worker tasks
+            futures = []
+            for thread_id in range(self.num_threads):
+                future = executor.submit(
+                    self._worker_thread,
+                    pattern,
+                    thread_id,
+                    max_attempts,
+                    timeout,
+                    start_time
+                )
+                futures.append(future)
+
+            # Wait for first successful result
+            for future in as_completed(futures):
+                try:
+                    worker_result = future.result()
+                    if worker_result and worker_result.success:
+                        self._stop_generation.set()
+                        return worker_result
+                except Exception as e:
+                    self.logger.error(f"Worker thread error: {e}")
+
+            # Cancel remaining futures
+            for future in futures:
+                future.cancel()
 
         return None
 
