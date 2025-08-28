@@ -16,7 +16,7 @@ from ..utils.logging import ProgressLogger, get_logger
 
 def _multiprocessing_worker(args):
     """Worker function for multiprocessing-based generation."""
-    config_dict, pattern_dict, worker_id, batch_size, max_attempts_per_worker = args
+    config_dict, pattern_dict, worker_id, timeout, max_attempts = args
 
     # Recreate objects from dictionaries (needed for multiprocessing)
     from .config import EpixConfig
@@ -36,30 +36,49 @@ def _multiprocessing_worker(args):
 
     attempts = 0
     start_time = time.time()
+    batch_size = 10000  # Process in batches for better performance
 
-    for _ in range(max_attempts_per_worker):
-        try:
-            # Generate keypair
-            keypair = crypto.generate_keypair()
-            attempts += 1
+    # Keep trying until a match is found or user-specified limits
+    while True:
+        # Check user-specified timeout (only if set)
+        if timeout and (time.time() - start_time) >= timeout:
+            break
 
-            # Check if address matches pattern
-            if pattern_validator.matches_pattern(keypair.address, pattern):
-                # Found a match!
-                return {
-                    'success': True,
-                    'keypair': {
-                        'private_key': keypair.private_key,
-                        'public_key': keypair.public_key,
-                        'address': keypair.address,
-                        'eth_address': keypair.eth_address
-                    },
-                    'attempts': attempts,
-                    'elapsed_time': time.time() - start_time,
-                    'worker_id': worker_id
-                }
-        except Exception as e:
-            continue
+        # Check user-specified max attempts (only if set)
+        if max_attempts and attempts >= max_attempts:
+            break
+
+        # Process a batch
+        for _ in range(batch_size):
+            try:
+                # Generate keypair
+                keypair = crypto.generate_keypair()
+                attempts += 1
+
+                # Check if address matches pattern
+                if pattern_validator.matches_pattern(keypair.address, pattern):
+                    # Found a match!
+                    return {
+                        'success': True,
+                        'keypair': {
+                            'private_key': keypair.private_key,
+                            'public_key': keypair.public_key,
+                            'address': keypair.address,
+                            'eth_address': keypair.eth_address
+                        },
+                        'attempts': attempts,
+                        'elapsed_time': time.time() - start_time,
+                        'worker_id': worker_id
+                    }
+
+                # Check user limits within batch (only if set)
+                if timeout and (time.time() - start_time) >= timeout:
+                    break
+                if max_attempts and attempts >= max_attempts:
+                    break
+
+            except Exception:
+                continue
 
     # No match found in this worker
     return {
@@ -299,9 +318,6 @@ class VanityGenerator:
             'case_sensitive': pattern.case_sensitive
         }
 
-        # Calculate attempts per worker
-        max_attempts_per_worker = (max_attempts or 1000000) // self.num_threads
-
         # Prepare worker arguments
         worker_args = []
         for worker_id in range(self.num_threads):
@@ -309,8 +325,8 @@ class VanityGenerator:
                 config_dict,
                 pattern_dict,
                 worker_id,
-                10000,  # batch_size
-                max_attempts_per_worker
+                timeout,  # timeout per worker (None = no timeout)
+                None  # max_attempts per worker (None = unlimited, let processes run until match found)
             ))
 
         # Use multiprocessing
